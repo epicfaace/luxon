@@ -2,11 +2,7 @@ import { isUndefined, isNumber, normalizeObject } from "./impl/util.js";
 import Locale from "./impl/locale.js";
 import Formatter from "./impl/formatter.js";
 import { parseISODuration } from "./impl/regexParser.js";
-import Settings from "./settings.js";
-import { InvalidArgumentError, InvalidDurationError, InvalidUnitError } from "./errors.js";
-import Invalid from "./impl/invalid.js";
-
-const INVALID = "Invalid Duration";
+import { InvalidArgumentError, InvalidUnitError, UnparsableStringError } from "./errors.js";
 
 // unit conversion constants
 const lowOrderMatrix = {
@@ -181,10 +177,6 @@ export default class Duration {
     /**
      * @access private
      */
-    this.invalid = config.invalid || null;
-    /**
-     * @access private
-     */
     this.matrix = accurate ? accurateMatrix : casualMatrix;
     /**
      * @access private
@@ -233,7 +225,8 @@ export default class Duration {
       values: normalizeObject(obj, Duration.normalizeUnit, [
         "locale",
         "numberingSystem",
-        "conversionAccuracy"
+        "conversionAccuracy",
+        "nullOnInvalid"
       ]),
       loc: Locale.fromObject(obj),
       conversionAccuracy: obj.conversionAccuracy
@@ -247,39 +240,22 @@ export default class Duration {
    * @param {string} [opts.locale='en-US'] - the locale to use
    * @param {string} opts.numberingSystem - the numbering system to use
    * @param {string} [opts.conversionAccuracy='casual'] - the conversion system to use
+   * @param {string} [opts.nullOnInvalid=false] - whether to return `null` on failed parsing
    * @see https://en.wikipedia.org/wiki/ISO_8601#Durations
    * @example Duration.fromISO('P3Y6M1W4DT12H30M5S').toObject() //=> { years: 3, months: 6, weeks: 1, days: 4, hours: 12, minutes: 30, seconds: 5 }
    * @example Duration.fromISO('PT23H').toObject() //=> { hours: 23 }
    * @example Duration.fromISO('P5Y3M').toObject() //=> { years: 5, months: 3 }
    * @return {Duration}
    */
-  static fromISO(text, opts) {
+  static fromISO(text, opts = {}) {
     const [parsed] = parseISODuration(text);
     if (parsed) {
       const obj = Object.assign(parsed, opts);
       return Duration.fromObject(obj);
     } else {
-      return Duration.invalid("unparsable", `the input "${text}" can't be parsed as ISO 8601`);
-    }
-  }
-
-  /**
-   * Create an invalid Duration.
-   * @param {string} reason - simple string of why this datetime is invalid. Should not contain parameters or anything else data-dependent
-   * @param {string} [explanation=null] - longer explanation, may include parameters and other useful debugging information
-   * @return {Duration}
-   */
-  static invalid(reason, explanation = null) {
-    if (!reason) {
-      throw new InvalidArgumentError("need to specify a reason the Duration is invalid");
-    }
-
-    const invalid = reason instanceof Invalid ? reason : new Invalid(reason, explanation);
-
-    if (Settings.throwOnInvalid) {
-      throw new InvalidDurationError(invalid);
-    } else {
-      return new Duration({ invalid });
+      if (opts.nullOnInvalid) {
+        return null;
+      } else throw new UnparsableStringError("ISO 8601", text);
     }
   }
 
@@ -327,7 +303,7 @@ export default class Duration {
    * @type {string}
    */
   get locale() {
-    return this.isValid ? this.loc.locale : null;
+    return this.loc?.locale;
   }
 
   /**
@@ -336,7 +312,7 @@ export default class Duration {
    * @type {string}
    */
   get numberingSystem() {
-    return this.isValid ? this.loc.numberingSystem : null;
+    return this.loc?.numberingSystem;
   }
 
   /**
@@ -364,9 +340,7 @@ export default class Duration {
     const fmtOpts = Object.assign({}, opts, {
       floor: opts.round !== false && opts.floor !== false
     });
-    return this.isValid
-      ? Formatter.create(this.loc, fmtOpts).formatDurationFromString(this, fmt)
-      : INVALID;
+    return Formatter.create(this.loc, fmtOpts).formatDurationFromString(this, fmt);
   }
 
   /**
@@ -377,8 +351,6 @@ export default class Duration {
    * @return {Object}
    */
   toObject(opts = {}) {
-    if (!this.isValid) return {};
-
     const base = Object.assign({}, this.values);
 
     if (opts.includeConfig) {
@@ -401,8 +373,6 @@ export default class Duration {
    */
   toISO() {
     // we could use the formatter, but this is an easier way to get the minimum string
-    if (!this.isValid) return null;
-
     let s = "P";
     if (this.years !== 0) s += this.years + "Y";
     if (this.months !== 0 || this.quarters !== 0) s += this.months + this.quarters * 3 + "M";
@@ -448,8 +418,6 @@ export default class Duration {
    * @return {Duration}
    */
   plus(duration) {
-    if (!this.isValid) return this;
-
     const dur = friendlyDuration(duration),
       result = {};
 
@@ -468,8 +436,6 @@ export default class Duration {
    * @return {Duration}
    */
   minus(duration) {
-    if (!this.isValid) return this;
-
     const dur = friendlyDuration(duration);
     return this.plus(dur.negate());
   }
@@ -494,8 +460,6 @@ export default class Duration {
    * @return {Duration}
    */
   set(values) {
-    if (!this.isValid) return this;
-
     const mixed = Object.assign(this.values, normalizeObject(values, Duration.normalizeUnit, []));
     return clone(this, { values: mixed });
   }
@@ -525,7 +489,7 @@ export default class Duration {
    * @return {number}
    */
   as(unit) {
-    return this.isValid ? this.shiftTo(unit).get(unit) : NaN;
+    return this.shiftTo(unit).get(unit);
   }
 
   /**
@@ -535,7 +499,6 @@ export default class Duration {
    * @return {Duration}
    */
   normalize() {
-    if (!this.isValid) return this;
     const vals = this.toObject();
     normalizeValues(this.matrix, vals);
     return Duration.fromObject(vals);
@@ -547,8 +510,6 @@ export default class Duration {
    * @return {Duration}
    */
   shiftTo(...units) {
-    if (!this.isValid) return this;
-
     if (units.length === 0) {
       return this;
     }
@@ -613,7 +574,6 @@ export default class Duration {
    * @return {Duration}
    */
   negate() {
-    if (!this.isValid) return this;
     const negated = {};
     for (const k of Object.keys(this.values)) {
       negated[k] = -this.values[k];
@@ -626,7 +586,7 @@ export default class Duration {
    * @type {number}
    */
   get years() {
-    return this.isValid ? this.values.years || 0 : NaN;
+    return this.values?.years || 0;
   }
 
   /**
@@ -634,7 +594,7 @@ export default class Duration {
    * @type {number}
    */
   get quarters() {
-    return this.isValid ? this.values.quarters || 0 : NaN;
+    return this.values?.quarters || 0;
   }
 
   /**
@@ -642,7 +602,7 @@ export default class Duration {
    * @type {number}
    */
   get months() {
-    return this.isValid ? this.values.months || 0 : NaN;
+    return this.values?.months || 0;
   }
 
   /**
@@ -650,7 +610,7 @@ export default class Duration {
    * @type {number}
    */
   get weeks() {
-    return this.isValid ? this.values.weeks || 0 : NaN;
+    return this.values?.weeks || 0;
   }
 
   /**
@@ -658,7 +618,7 @@ export default class Duration {
    * @type {number}
    */
   get days() {
-    return this.isValid ? this.values.days || 0 : NaN;
+    return this.values?.days || 0;
   }
 
   /**
@@ -666,7 +626,7 @@ export default class Duration {
    * @type {number}
    */
   get hours() {
-    return this.isValid ? this.values.hours || 0 : NaN;
+    return this.values?.hours || 0;
   }
 
   /**
@@ -674,7 +634,7 @@ export default class Duration {
    * @type {number}
    */
   get minutes() {
-    return this.isValid ? this.values.minutes || 0 : NaN;
+    return this.values?.minutes || 0;
   }
 
   /**
@@ -682,7 +642,7 @@ export default class Duration {
    * @return {number}
    */
   get seconds() {
-    return this.isValid ? this.values.seconds || 0 : NaN;
+    return this.values?.seconds || 0;
   }
 
   /**
@@ -690,32 +650,7 @@ export default class Duration {
    * @return {number}
    */
   get milliseconds() {
-    return this.isValid ? this.values.milliseconds || 0 : NaN;
-  }
-
-  /**
-   * Returns whether the Duration is invalid. Invalid durations are returned by diff operations
-   * on invalid DateTimes or Intervals.
-   * @return {boolean}
-   */
-  get isValid() {
-    return this.invalid === null;
-  }
-
-  /**
-   * Returns an error code if this Duration became invalid, or null if the Duration is valid
-   * @return {string}
-   */
-  get invalidReason() {
-    return this.invalid ? this.invalid.reason : null;
-  }
-
-  /**
-   * Returns an explanation of why this Duration became invalid, or null if the Duration is valid
-   * @type {string}
-   */
-  get invalidExplanation() {
-    return this.invalid ? this.invalid.explanation : null;
+    return this.values?.milliseconds || 0;
   }
 
   /**
@@ -725,10 +660,6 @@ export default class Duration {
    * @return {boolean}
    */
   equals(other) {
-    if (!this.isValid || !other.isValid) {
-      return false;
-    }
-
     if (!this.loc.equals(other.loc)) {
       return false;
     }
